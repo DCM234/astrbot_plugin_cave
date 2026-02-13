@@ -1,136 +1,181 @@
 import sqlite3
 import random
-import os
 import time
+import asyncio
+import os
+from typing import Optional, List, Tuple
+from contextlib import contextmanager
+
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
-from astrbot.api.message_components import Node, Nodes, Plain, Video, Image
-
-# 注册存储路径(数据库格式：SQLite，不可更换，除非有人头铁帮我改，那他就是重音铁头【划掉】)
-_DB_DIR = os.path.join("data", "plugin_data", "astrbot_plugin_cave")
-_DB_PATH = os.path.join(_DB_DIR, "cave.db")
+from astrbot.api.message_components import Node, Nodes, Plain
 
 
-# 初始化数据目录
-def _ensure_db():
-    if not os.path.exists(_DB_DIR):
-        os.makedirs(_DB_DIR)
-    conn = sqlite3.connect(_DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS cave (
-            cave_id INTEGER PRIMARY KEY,
-            text TEXT,
-            sender_id INTEGER,
-            group_id INTEGER,
-            group_nick TEXT,
-            pick_count INTEGER DEFAULT 0,
-            date INTEGER
-        )
-    """)
-    c.execute("SELECT cave_id FROM cave WHERE cave_id = 0")
-    if c.fetchone() is None:
-        c.execute("INSERT INTO cave (cave_id, text, sender_id, group_id, group_nick, pick_count, date) VALUES (0, '0', 0, 0, '', 0, 0)")
-    conn.commit()
-    conn.close()
+class CaveDatabase:
+    """回声洞数据库管理类"""
+    
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._init_db()
+    
+    def _init_db(self):
+        """初始化数据库表结构"""
+        try:
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                # 主表：使用 AUTOINCREMENT 确保 ID 唯一且递增
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS cave (
+                        cave_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        text TEXT NOT NULL,
+                        sender_id INTEGER NOT NULL,
+                        group_id INTEGER NOT NULL,
+                        group_nick TEXT NOT NULL,
+                        pick_count INTEGER DEFAULT 0,
+                        date INTEGER NOT NULL,
+                        is_deleted INTEGER DEFAULT 0
+                    )
+                """)
+                # 创建索引提升查询性能
+                c.execute("CREATE INDEX IF NOT EXISTS idx_sender ON cave(sender_id)")
+                c.execute("CREATE INDEX IF NOT EXISTS idx_deleted ON cave(is_deleted)")
+                conn.commit()
+                logger.info("回声洞数据库初始化完成")
+        except Exception as e:
+            logger.error(f"数据库初始化失败: {e}")
+            raise
+    
+    @contextmanager
+    def _get_conn(self):
+        """获取数据库连接的上下文管理器"""
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        try:
+            yield conn
+        finally:
+            conn.close()
+    
+    def add_cave(self, sender_id: int, group_id: int, group_nick: str, content: str) -> Optional[int]:
+        """添加回声洞记录"""
+        try:
+            timestamp = int(time.time())
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute(
+                    "INSERT INTO cave (text, sender_id, group_id, group_nick, pick_count, date, is_deleted) "
+                    "VALUES (?, ?, ?, ?, 0, ?, 0)",
+                    (content, sender_id, group_id, group_nick, timestamp)
+                )
+                conn.commit()
+                return c.lastrowid
+        except Exception as e:
+            logger.error(f"添加回声洞失败: {e}")
+            return None
+    
+    def get_cave(self, cave_id: int) -> Optional[Tuple]:
+        """获取指定 ID 的回声洞"""
+        try:
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute(
+                    "SELECT cave_id, text, sender_id, group_id, group_nick, pick_count, date, is_deleted "
+                    "FROM cave WHERE cave_id = ?",
+                    (cave_id,)
+                )
+                return c.fetchone()
+        except Exception as e:
+            logger.error(f"查询回声洞失败: {e}")
+            return None
+    
+    def increment_pick_count(self, cave_id: int) -> bool:
+        """增加回声洞查看次数"""
+        try:
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute("UPDATE cave SET pick_count = pick_count + 1 WHERE cave_id = ?", (cave_id,))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"更新查看次数失败: {e}")
+            return False
+    
+    def get_random_cave(self) -> Optional[Tuple]:
+        """随机获取一条未删除的回声洞"""
+        try:
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute(
+                    "SELECT cave_id, text, sender_id, group_id, group_nick, pick_count, date, is_deleted "
+                    "FROM cave WHERE is_deleted = 0 ORDER BY RANDOM() LIMIT 1"
+                )
+                return c.fetchone()
+        except Exception as e:
+            logger.error(f"随机查询回声洞失败: {e}")
+            return None
+    
+    def get_caves_by_sender(self, sender_id: int, limit: int = 100, offset: int = 0) -> Tuple[List[int], int]:
+        """获取指定用户的回声洞列表（分页）"""
+        try:
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                # 获取总数
+                c.execute("SELECT COUNT(*) FROM cave WHERE sender_id = ? AND is_deleted = 0", (sender_id,))
+                total = c.fetchone()[0]
+                
+                # 获取分页数据
+                c.execute(
+                    "SELECT cave_id FROM cave WHERE sender_id = ? AND is_deleted = 0 "
+                    "ORDER BY cave_id DESC LIMIT ? OFFSET ?",
+                    (sender_id, limit, offset)
+                )
+                rows = c.fetchall()
+                return [r[0] for r in rows], total
+        except Exception as e:
+            logger.error(f"查询用户回声洞失败: {e}")
+            return [], 0
+    
+    def delete_cave(self, cave_id: int) -> bool:
+        """软删除回声洞"""
+        try:
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute("UPDATE cave SET is_deleted = 1 WHERE cave_id = ?", (cave_id,))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"删除回声洞失败: {e}")
+            return False
+    
+    def search_caves(self, keyword: str, limit: int = 100) -> List[Tuple]:
+        """搜索回声洞（SQL 层限制）"""
+        try:
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute(
+                    "SELECT cave_id, text, sender_id, group_id, group_nick, pick_count, date, is_deleted "
+                    "FROM cave WHERE is_deleted = 0 AND text LIKE ? "
+                    "ORDER BY cave_id DESC LIMIT ?",
+                    (f"%{keyword}%", limit)
+                )
+                return c.fetchall()
+        except Exception as e:
+            logger.error(f"搜索回声洞失败: {e}")
+            return []
+    
+    def get_max_cave_id(self) -> int:
+        """获取当前最大的 cave_id"""
+        try:
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT MAX(cave_id) FROM cave")
+                result = c.fetchone()[0]
+                return result if result else 0
+        except Exception as e:
+            logger.error(f"获取最大 ID 失败: {e}")
+            return 0
 
 
-# 获取连接(纯看着好看，堪比宏定义)
-def _get_conn():
-    return sqlite3.connect(_DB_PATH)
-
-
-# 寻找回声洞最后一条记录(最后一条记录的索引是第0条记录的值)
-def _get_max_id():
-    conn = _get_conn()
-    c = conn.cursor()
-    c.execute("SELECT text FROM cave WHERE cave_id = 0")
-    row = c.fetchone()
-    conn.close()
-    return int(row[0]) if row else 0
-
-
-# 向数据库添加一条记录
-def _add_cave(sender_id, group_id, group_nick, content):
-    max_id = _get_max_id()
-    new_id = max_id + 1
-    timestamp = int(time.time())
-    conn = _get_conn()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO cave (cave_id, text, sender_id, group_id, group_nick, pick_count, date) VALUES (?, ?, ?, ?, ?, 0, ?)",
-        (new_id, content, sender_id, group_id, group_nick, timestamp)
-    )
-    c.execute("UPDATE cave SET text = ? WHERE cave_id = 0", (str(new_id),))
-    conn.commit()
-    conn.close()
-    return new_id
-
-
-# 在数据库中查找记录
-def _get_cave(cave_id):
-    conn = _get_conn()
-    c = conn.cursor()
-    c.execute("SELECT cave_id, text, sender_id, group_id, group_nick, pick_count, date FROM cave WHERE cave_id = ?", (cave_id,))
-    row = c.fetchone()
-    conn.close()
-    return row
-
-
-# 修改回声洞被阅读次数
-def _increment_pick_count(cave_id):
-    conn = _get_conn()
-    c = conn.cursor()
-    c.execute("UPDATE cave SET pick_count = pick_count + 1 WHERE cave_id = ?", (cave_id,))
-    conn.commit()
-    conn.close()
-
-
-# 随机获取回声洞的依赖
-def _get_random_cave():
-    conn = _get_conn()
-    c = conn.cursor()
-    c.execute("SELECT cave_id, text, sender_id, group_id, group_nick, pick_count, date FROM cave WHERE cave_id > 0 AND text != '此回声洞已被删除' ORDER BY RANDOM() LIMIT 1")
-    row = c.fetchone()
-    conn.close()
-    return row
-
-
-# 使用《高效》的遍历算法获取账号所属的所有回声洞
-def _get_caves_by_sender(sender_id):
-    conn = _get_conn()
-    c = conn.cursor()
-    c.execute("SELECT cave_id FROM cave WHERE sender_id = ? AND cave_id > 0", (sender_id,))
-    rows = c.fetchall()
-    conn.close()
-    return [r[0] for r in rows]
-
-
-# 删除回声洞
-def _delete_cave(cave_id):
-    conn = _get_conn()
-    c = conn.cursor()
-    c.execute("UPDATE cave SET text = '此回声洞已被删除' WHERE cave_id = ?", (cave_id,))
-    conn.commit()
-    conn.close()
-
-
-# 搜索回声洞（也是遍历）
-def _search_caves(keyword):
-    conn = _get_conn()
-    c = conn.cursor()
-    c.execute(
-        "SELECT cave_id, text, sender_id, group_id, group_nick, pick_count, date FROM cave WHERE cave_id > 0 AND text != '此回声洞已被删除' AND text LIKE ?",
-        ("%" + keyword + "%",)
-    )
-    rows = c.fetchall()
-    conn.close()
-    return rows
-
-
-# 从群号获取群名称
-async def _get_group_name(event: AstrMessageEvent, group_id: int):
+async def _get_group_name(event: AstrMessageEvent, group_id: int) -> str:
     """获取群名称"""
     if event.get_platform_name() == "aiocqhttp":
         try:
@@ -139,7 +184,6 @@ async def _get_group_name(event: AstrMessageEvent, group_id: int):
                 client = event.bot
                 payloads = {"group_id": int(group_id)}
                 ret = await client.api.call_action('get_group_detail_info', **payloads)
-                logger.info(f"获取群信息返回: {ret}")
                 if ret and isinstance(ret, dict) and 'groupName' in ret:
                     return ret['groupName']
         except Exception as e:
@@ -147,185 +191,341 @@ async def _get_group_name(event: AstrMessageEvent, group_id: int):
     return "未知群聊"
 
 
-# 此程序仅在aiocqhttp环境下测试通过，且大量依赖NapCat接口，仅支持NapCat&AstrBot4.9+
-# 测试环境：AstrBot4.15 + NapCat个人号
-# 作者仅提供软件本体，使用者自行为回声洞中所有信息负责
-
-
-@register("astrbot_plugin_cave", "lingyu", "基于SQLite3的简单回声洞插件", "1.0.0", "")
+@register("astrbot_plugin_cave", "lingyu", "基于SQLite3的简单回声洞插件", "0.3")
 class CavePlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig):
+    def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
-        self.config = config
-        _ensure_db()
+        self.config = config if config else AstrBotConfig({})
         
-        # 读取配置文件
+        # 初始化数据库路径
+        plugin_data_dir = os.path.join("data", "plugin_data", "astrbot_plugin_cave")
+        if not os.path.exists(plugin_data_dir):
+            os.makedirs(plugin_data_dir)
+        
+        db_path = os.path.join(plugin_data_dir, "cave.db")
+        
+        # 初始化数据库
+        self.db = CaveDatabase(db_path)
+        
+        # 读取配置
         self.super_admins = self.config.get("super_admins", [])
-        self.forward_target = self.config.get("forward_target", )
+        self.max_content_length = self.config.get("max_content_length", 200)
+        self.page_size = self.config.get("page_size", 100)
         self.quotes = self.config.get("quotes", [])
+        self.messages = self.config.get("messages", {})
         
-        # 发送日志确认加载成功
         logger.info(f"回声洞插件已加载，超级管理员: {self.super_admins}")
-
-    # 经典写个函数功能性堪比宏定义
+    
+    def _get_message(self, key: str, **kwargs) -> str:
+        """获取配置的消息文本"""
+        msg = self.messages.get(key, "")
+        if kwargs:
+            try:
+                msg = msg.format(**kwargs)
+            except Exception:
+                pass
+        return msg
+    
     def _is_super_admin(self, qq: int) -> bool:
+        """检查是否为超级管理员"""
         return qq in self.super_admins
-
-    # 添加回声洞命令（这里的很多结构都是给作者自己的bot用的，其他bot可能需要改动）
+    
     @filter.command("ca")
     async def cave_add(self, event: AstrMessageEvent):
+        """添加回声洞"""
         msg = event.message_str.strip()
         parts = msg.split(None, 1)
         content = parts[1].strip() if len(parts) > 1 else ""
-
+        
         if not content:
-            yield event.plain_result("唔...回声洞不可以上传滚木哦")
+            yield event.plain_result(self._get_message("empty_content"))
             return
-
+        
         if content.isdigit() or (content.startswith("-") and len(content) > 1 and content[1:].isdigit()):
-            yield event.plain_result("只输入了数字...猜你想用的是ci吧")
+            yield event.plain_result(self._get_message("number_only"))
             return
-
+        
+        # 检查内容长度
+        if len(content) > self.max_content_length:
+            yield event.plain_result(
+                self._get_message("content_too_long", max_length=self.max_content_length)
+            )
+            return
+        
         sender_id = int(event.get_sender_id())
         group_id = int(event.message_obj.group_id) if event.message_obj.group_id else 0
-        
         group_nick = await _get_group_name(event, group_id) if group_id else "私聊"
         
-        new_id = _add_cave(sender_id, group_id, group_nick, content)
-        quote = random.choice(self.quotes) if self.quotes else ""
-        yield event.plain_result(f"回声洞 #{new_id} 添加成功！\n\n{quote}")
-
-    # 查看回声洞命令（不合法返回滚木可以改成报错）
+        new_id = self.db.add_cave(sender_id, group_id, group_nick, content)
+        
+        if new_id:
+            quote = random.choice(self.quotes) if self.quotes else ""
+            yield event.plain_result(
+                self._get_message("add_success", cave_id=new_id, quote=quote)
+            )
+        else:
+            yield event.plain_result(self._get_message("add_failed"))
+    
     @filter.command("ci")
     async def cave_inspect(self, event: AstrMessageEvent, cave_id_str: str = ""):
+        """查看指定回声洞"""
         cave_id_str = cave_id_str.strip()
-
-        valid = False
-        if cave_id_str.isdigit():
-            cave_id = int(cave_id_str)
-            if 0 < cave_id <= _get_max_id():
-                valid = True
-
-        if not valid:
-            yield event.plain_result(f"回声洞 #{cave_id_str}\n\n滚木滚木滚木")
+        
+        if not cave_id_str.isdigit() or int(cave_id_str) <= 0:
+            yield event.plain_result(
+                f"回声洞 #{cave_id_str}\n\n{self._get_message('invalid_cave')}"
+            )
             return
-
-        row = _get_cave(int(cave_id_str))
+        
+        cave_id = int(cave_id_str)
+        row = self.db.get_cave(cave_id)
+        
         if row is None:
-            yield event.plain_result(f"回声洞 #{cave_id_str}\n\n滚木滚木滚木")
+            yield event.plain_result(
+                f"回声洞 #{cave_id_str}\n\n{self._get_message('invalid_cave')}"
+            )
             return
-
-        _increment_pick_count(int(cave_id_str))
-        yield event.plain_result(f"回声洞 #{row[0]}\n\n{row[1]}\n\n——发布自：{row[4]}\n此回声洞已被查看{row[5] + 1}次")
-
-    # 随机查看回声洞命令
+        
+        # row: (cave_id, text, sender_id, group_id, group_nick, pick_count, date, is_deleted)
+        if row[7] == 1:  # is_deleted
+            yield event.plain_result(
+                f"回声洞 #{cave_id}\n\n{self._get_message('deleted_cave')}"
+            )
+            return
+        
+        self.db.increment_pick_count(cave_id)
+        yield event.plain_result(
+            self._get_message(
+                "cave_detail",
+                cave_id=row[0],
+                text=row[1],
+                group_nick=row[4],
+                pick_count=row[5] + 1
+            )
+        )
+    
     @filter.command("cq")
     async def cave_random(self, event: AstrMessageEvent):
-        row = _get_random_cave()
+        """随机查看回声洞"""
+        row = self.db.get_random_cave()
+        
         if row is None:
-            yield event.plain_result("回声洞里空空如也...")
+            yield event.plain_result(self._get_message("cave_empty"))
             return
-        _increment_pick_count(row[0])
-        yield event.plain_result(f"回声洞 #{row[0]}\n\n{row[1]}\n\n——发布自：{row[4]}\n此回声洞已被查看{row[5] + 1}次")
-
-    # 查看自己或指定QQ的回声洞编号列表
+        
+        self.db.increment_pick_count(row[0])
+        yield event.plain_result(
+            self._get_message(
+                "cave_detail",
+                cave_id=row[0],
+                text=row[1],
+                group_nick=row[4],
+                pick_count=row[5] + 1
+            )
+        )
+    
     @filter.command("mycave")
-    async def my_cave(self, event: AstrMessageEvent, target_qq: str = ""):
-        target_qq = target_qq.strip()
-
-        if target_qq:
-            if not target_qq.isdigit():
-                yield event.plain_result("请输入有效的QQ号")
+    async def my_cave(self, event: AstrMessageEvent):
+        """查看自己或指定QQ的回声洞列表（支持分页）
+        
+        使用方式：
+        1. mycave -> 查看自己的第1页
+        2. mycave 3 -> 查看自己的第3页
+        3. mycave 123456789 -> 查看指定QQ的第1页
+        4. mycave 123456789 2 -> 查看指定QQ的第2页
+        """
+        sender_id = int(event.get_sender_id())
+        target_qq = sender_id
+        page = 1
+        
+        # 从消息中解析参数
+        msg = event.message_str.strip()
+        parts = msg.split()
+        args = parts[1:] if len(parts) > 1 else []  # 跳过命令本身
+        
+        if len(args) == 0:
+            # 模式1：不输入参数 -> 默认自己，第1页
+            target_qq = sender_id
+            page = 1
+            
+        elif len(args) == 1:
+            arg = args[0].strip()
+            if not arg.isdigit():
+                yield event.plain_result(self._get_message("invalid_number"))
                 return
-            sender = int(target_qq)
-        else:
-            sender = int(event.get_sender_id())
-
-        ids = _get_caves_by_sender(sender)
-        if not ids:
-            yield event.plain_result("没有找到相关的回声洞记录")
+            
+            num = int(arg)
+            
+            if num < 10000:
+                # 模式2：一个参数且小于10000 -> 默认自己，参数作为页码
+                target_qq = sender_id
+                page = num
+            else:
+                # 模式3：一个参数且大于等于10000 -> 参数作为QQ号，第1页
+                target_qq = num
+                page = 1
+                
+        elif len(args) >= 2:
+            # 模式4：两个参数 -> 第一个是QQ号，第二个是页码
+            arg1 = args[0].strip()
+            arg2 = args[1].strip()
+            
+            if not arg1.isdigit() or not arg2.isdigit():
+                yield event.plain_result(self._get_message("invalid_number"))
+                return
+            
+            target_qq = int(arg1)
+            page = int(arg2)
+        
+        # 验证页码有效性
+        if page < 1:
+            yield event.plain_result(self._get_message("page_must_positive"))
             return
-
+        
+        # 计算偏移量
+        offset = (page - 1) * self.page_size
+        ids, total = self.db.get_caves_by_sender(target_qq, self.page_size, offset)
+        
+        # 检查是否有数据
+        if total == 0:
+            yield event.plain_result(self._get_message("no_cave_records", qq=target_qq))
+            return
+        
+        # 计算总页数
+        total_pages = (total + self.page_size - 1) // self.page_size
+        
+        # 检查页码是否越界
+        if page > total_pages:
+            yield event.plain_result(
+                self._get_message("page_out_of_range", qq=target_qq, total_pages=total_pages)
+            )
+            return
+        
+        # 构建结果
+        if not ids:
+            yield event.plain_result(self._get_message("page_no_data", page=page))
+            return
+        
         id_list = ", ".join(f"#{i}" for i in ids)
-        yield event.plain_result(f"QQ {sender} 的回声洞编号：\n{id_list}")
+        yield event.plain_result(
+            self._get_message(
+                "mycave_result",
+                qq=target_qq,
+                page=page,
+                total_pages=total_pages,
+                total=total,
+                id_list=id_list
+            )
+        )
 
-    # 删除回声洞命令（此处有鉴权）
+    
     @filter.command("rmcave")
     async def remove_cave(self, event: AstrMessageEvent, cave_id_str: str = ""):
-        '''删除指定编号的回声洞'''
+        """删除指定编号的回声洞"""
         cave_id_str = cave_id_str.strip()
+        
         if not cave_id_str.isdigit() or int(cave_id_str) <= 0:
-            yield event.plain_result("请输入有效的回声洞编号")
+            yield event.plain_result(self._get_message("invalid_cave_id"))
             return
-
+        
         cave_id = int(cave_id_str)
-        row = _get_cave(cave_id)
+        row = self.db.get_cave(cave_id)
+        
         if row is None:
-            yield event.plain_result(f"回声洞 #{cave_id} 不存在")
+            yield event.plain_result(self._get_message("cave_not_exist", cave_id=cave_id))
             return
-
-        if row[1] == "此回声洞已被删除":
-            yield event.plain_result(f"回声洞 #{cave_id} 已经被删除过了")
+        
+        # row: (cave_id, text, sender_id, group_id, group_nick, pick_count, date, is_deleted)
+        if row[7] == 1:  # is_deleted
+            yield event.plain_result(self._get_message("cave_already_deleted", cave_id=cave_id))
             return
-
+        
         sender_id = int(event.get_sender_id())
         cave_sender = row[2]
-
+        
         # 鉴权：只有超级管理员或回声洞创建者可以删除
         if not self._is_super_admin(sender_id) and sender_id != cave_sender:
-            yield event.plain_result("你没有权限删除这条回声洞")
+            yield event.plain_result(self._get_message("no_permission"))
             return
-
-        _delete_cave(cave_id)
-        yield event.plain_result(f"回声洞 #{cave_id} 已删除")
-
-    # 搜索回声洞（关键词）
+        
+        if self.db.delete_cave(cave_id):
+            yield event.plain_result(self._get_message("delete_success", cave_id=cave_id))
+        else:
+            yield event.plain_result(self._get_message("delete_failed"))
+    
     @filter.command("cf")
     async def cave_find(self, event: AstrMessageEvent):
+        """搜索回声洞"""
         msg = event.message_str.strip()
         parts = msg.split(None, 1)
         keyword = parts[1].strip() if len(parts) > 1 else ""
-
+        
         if not keyword:
-            yield event.plain_result("你输入了滚木，我在洞里给你找来了！看，滚木回声洞！")
+            yield event.plain_result(self._get_message("search_empty_keyword"))
             return
-
-        results = _search_caves(keyword)
+        
+        # SQL 层直接限制结果数量
+        results = self.db.search_caves(keyword, limit=self.page_size)
+        
         if not results:
-            yield event.plain_result("唔...翻了一圈也没找到呢")
+            yield event.plain_result(self._get_message("search_no_result"))
             return
-
-        results = results[:100]
-
-        for r in results:
-            _increment_pick_count(r[0])
-
-        chain = MessageChain().message(f"找到啦！一共有整整 {len(results)} 条呐！")
+        
+        chain = MessageChain().message(
+            self._get_message("search_result_header", count=len(results))
+        )
         await self.context.send_message(event.unified_msg_origin, chain)
-
-        import asyncio
+        
+        # 分批发送，每批最多 30 条
         batch_size = 30
-        batch_count = (len(results) + batch_size - 1) // batch_size
         
         for i in range(0, len(results), batch_size):
             batch = results[i:i + batch_size]
             nodes = Nodes([])
+            
             for r in batch:
+                # r: (cave_id, text, sender_id, group_id, group_nick, pick_count, date, is_deleted)
                 nodes.nodes.append(
                     Node(
-                        uin = event.get_self_id(),
-                        name = "回声洞",
-                        content=[Plain(f"回声洞 #{r[0]}\n\n{r[1]}\n\n——发布自：{r[4]}\n此回声洞已被查看{r[5] + 1}次")]
+                        uin=event.get_self_id(),
+                        name="回声洞",
+                        content=[Plain(
+                            self._get_message(
+                                "search_result_detail",
+                                cave_id=r[0],
+                                text=r[1],
+                                group_nick=r[4],
+                                pick_count=r[5]
+                            )
+                        )]
                     )
                 )
             
-            yield event.chain_result([nodes])
-        
-        # 如果不是最后一批，等待一下避免发送过快
+            try:
+                yield event.chain_result([nodes])
+            except Exception as e:
+                logger.error(f"发送合并消息失败: {e}")
+                # 降级：逐条发送
+                for r in batch:
+                    try:
+                        yield event.plain_result(
+                            self._get_message(
+                                "search_result_detail",
+                                cave_id=r[0],
+                                text=r[1],
+                                group_nick=r[4],
+                                pick_count=r[5]
+                            )
+                        )
+                        await asyncio.sleep(0.3)
+                    except Exception as send_err:
+                        logger.error(f"发送单条消息失败: {send_err}")
+            
+            # 批次间延迟
             if i + batch_size < len(results):
                 await asyncio.sleep(0.5)
-
-
-    # 啥也不会发生喵
+    
     async def terminate(self):
+        """插件卸载时的清理工作"""
         pass
+

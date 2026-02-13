@@ -1,7 +1,6 @@
 name: astrbot_plugin_cave
 display_name: 回声洞
-desc: 一个基于SQLite3的简易回声洞插件，支持增删查，关键词索引，账号索引（仅在aiocqhttp测试通过，也仅支持NapCat）
-version: v0.2
+desc: 基于SQLite3的简单回声洞插件
+version: v0.3
 author: lingyu
-
 repo: https://github.com/DCM234/astrbot_plugin_cave

@@ -27,5 +27,154 @@
       "既然选择了远方，便只顾风雨兼程。——汪国真",
       "人生如逆旅，我亦是行人。——苏轼"
     ]
+  },
+  "max_content_length": {
+    "description": "回声洞内容最大长度",
+    "type": "int",
+    "hint": "限制单条回声洞的最大字符数",
+    "default": 200
+  },
+  "page_size": {
+    "description": "每页显示数量",
+    "type": "int",
+    "hint": "mycave 和 cf 指令每页显示的回声洞数量",
+    "default": 100
+  },
+  "messages": {
+    "description": "提示消息配置",
+    "type": "object",
+    "hint": "自定义各种提示消息文案",
+    "items": {
+      "empty_content": {
+        "description": "空内容提示",
+        "type": "string",
+        "default": "唔...回声洞不可以上传滚木哦"
+      },
+      "number_only": {
+        "description": "仅输入数字提示",
+        "type": "string",
+        "default": "只输入了数字...猜你想用的是ci吧"
+      },
+      "invalid_cave": {
+        "description": "无效回声洞提示",
+        "type": "string",
+        "default": "滚木滚木滚木"
+      },
+      "deleted_cave": {
+        "description": "已删除回声洞显示文本",
+        "type": "string",
+        "default": "此回声洞已被删除"
+      },
+      "cave_empty": {
+        "description": "回声洞为空提示",
+        "type": "string",
+        "default": "回声洞里空空如也..."
+      },
+      "no_permission": {
+        "description": "无权限提示",
+        "type": "string",
+        "default": "你没有权限删除这条回声洞"
+      },
+      "content_too_long": {
+        "description": "内容过长提示",
+        "type": "string",
+        "default": "内容太长啦，最多只能 {max_length} 个字哦"
+      },
+      "search_empty_keyword": {
+        "description": "搜索空关键词提示",
+        "type": "string",
+        "default": "你输入了滚木，我在洞里给你找来了！看，滚木回声洞！"
+      },
+      "search_no_result": {
+        "description": "搜索无结果提示",
+        "type": "string",
+        "default": "唔...翻了一圈也没找到呢"
+      },
+      "add_success": {
+        "description": "添加成功提示",
+        "type": "string",
+        "default": "回声洞 #{cave_id} 添加成功！\n\n{quote}"
+      },
+      "add_failed": {
+        "description": "添加失败提示",
+        "type": "string",
+        "default": "添加失败，请稍后重试"
+      },
+      "cave_detail": {
+        "description": "回声洞详情格式",
+        "type": "string",
+        "default": "回声洞 #{cave_id}\n\n{text}\n\n——发布自：{group_nick}\n此回声洞已被查看{pick_count}次"
+      },
+      "cave_not_exist": {
+        "description": "回声洞不存在提示",
+        "type": "string",
+        "default": "回声洞 #{cave_id} 不存在"
+      },
+      "cave_already_deleted": {
+        "description": "回声洞已删除提示",
+        "type": "string",
+        "default": "回声洞 #{cave_id} 已经被删除过了"
+      },
+      "delete_success": {
+        "description": "删除成功提示",
+        "type": "string",
+        "default": "回声洞 #{cave_id} 已删除"
+      },
+      "delete_failed": {
+        "description": "删除失败提示",
+        "type": "string",
+        "default": "删除失败，请稍后重试"
+      },
+      "invalid_number": {
+        "description": "无效数字参数提示",
+        "type": "string",
+        "default": "请输入有效的数字参数"
+      },
+      "invalid_cave_id": {
+        "description": "无效回声洞编号提示",
+        "type": "string",
+        "default": "请输入有效的回声洞编号"
+      },
+      "invalid_qq": {
+        "description": "无效QQ号提示",
+        "type": "string",
+        "default": "请输入有效的QQ号"
+      },
+      "page_must_positive": {
+        "description": "页码必须为正数提示",
+        "type": "string",
+        "default": "页码必须大于0"
+      },
+      "no_cave_records": {
+        "description": "无回声洞记录提示",
+        "type": "string",
+        "default": "QQ {qq} 没有回声洞记录"
+      },
+      "page_out_of_range": {
+        "description": "页码超出范围提示",
+        "type": "string",
+        "default": "页码超出范围，QQ {qq} 共有 {total_pages} 页"
+      },
+      "page_no_data": {
+        "description": "当前页无数据提示",
+        "type": "string",
+        "default": "第 {page} 页没有数据"
+      },
+      "mycave_result": {
+        "description": "mycave结果格式",
+        "type": "string",
+        "default": "QQ {qq} 的回声洞编号（第 {page}/{total_pages} 页，共 {total} 条）：\n{id_list}"
+      },
+      "search_result_header": {
+        "description": "搜索结果头部",
+        "type": "string",
+        "default": "找到啦！共 {count} 条结果："
+      },
+      "search_result_detail": {
+        "description": "搜索结果详情格式",
+        "type": "string",
+        "default": "回声洞 #{cave_id}\n\n{text}\n\n——发布自：{group_nick}\n此回声洞已被查看{pick_count}次"
+      }
+    }
   }
 }
