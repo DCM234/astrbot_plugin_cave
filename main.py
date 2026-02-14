@@ -7,7 +7,7 @@ from typing import Optional, List, Tuple
 from contextlib import contextmanager
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger, AstrBotConfig
 from astrbot.api.message_components import Node, Nodes, Plain
 
@@ -198,7 +198,7 @@ class CavePlugin(Star):
         self.config = config if config else AstrBotConfig({})
         
         # 初始化数据库路径
-        plugin_data_dir = os.path.join("data", "plugin_data", "astrbot_plugin_cave")
+        StarTools.get_data_dir()
         if not os.path.exists(plugin_data_dir):
             os.makedirs(plugin_data_dir)
         
@@ -528,4 +528,5 @@ class CavePlugin(Star):
     async def terminate(self):
         """插件卸载时的清理工作"""
         pass
+
 
